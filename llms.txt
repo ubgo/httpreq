@@ -20,6 +20,8 @@ httpreq collapses the most common service call — marshal a request body, set h
 - `WithObserver(func(ctx, Trace))`: fires once per attempt with metadata only (no bodies, no headers).
 - `WithConnTrace()`: adds DNS/Connect/TLS/TTFB phase timing to the `Trace`.
 - `SlogObserver(*slog.Logger, slog.Level)`: structured-logging adapter; failures log at ERROR.
+- `Curl(ctx, endpoint, opts...) (string, error)`: render the request as a runnable curl command without sending it.
+- `WithCurl(func(curl string))`: receive the curl command just before Do sends; `RequestCurl(*http.Request)` renders any request.
 - `HTTPError`: returned for non-2xx responses; retains the raw body.
 
 ## Optional

@@ -81,6 +81,47 @@ func ExampleSlogObserver() {
 	)
 }
 
+// ExampleCurl renders a request as a runnable curl command without sending it —
+// handy for logging or reproducing a call on the command line.
+func ExampleCurl() {
+	cmd, err := httpreq.Curl(context.Background(), "https://api.example.com/users",
+		httpreq.WithMethod(http.MethodPost),
+		httpreq.WithHeader("Accept", "application/json"),
+		httpreq.WithJSONBody(map[string]string{"name": "alice"}),
+	)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(cmd)
+	// Output: curl -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' --data-raw '{"name":"alice"}' 'https://api.example.com/users'
+}
+
+// ExampleRequestCurl renders a plain *http.Request you already hold — built
+// with the standard library, not through httpreq — as a curl command.
+func ExampleRequestCurl() {
+	req, _ := http.NewRequest(http.MethodGet, "https://api.example.com/users", nil)
+	req.Header.Set("Accept", "application/json")
+
+	cmd, err := httpreq.RequestCurl(req)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(cmd)
+	// Output: curl -H 'Accept: application/json' 'https://api.example.com/users'
+}
+
+// ExampleWithCurl logs the exact request Do sends, right before it goes out.
+func ExampleWithCurl() {
+	_, _ = httpreq.Do(context.Background(), "https://api.example.com/health",
+		httpreq.WithCurl(func(cmd string) {
+			// print it, log it, whatever you want
+			_ = cmd
+		}),
+	)
+}
+
 // ExampleWithConnTrace adds connection-phase timing (DNS/Connect/TLS/TTFB) to
 // the Trace. Connect and TLS stay zero on a reused keep-alive connection.
 // Output is not asserted because timings vary per run.

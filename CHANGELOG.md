@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Observability, dependency-free. `WithObserver(func(ctx, Trace))` fires once per request attempt on every path (success, non-2xx, network error, decode error) with metadata only — no bodies or headers.
 - `Trace` type carrying method, URL, request/response byte counts, status, duration, typed error, attempt number, and optional connection-phase timings.
 - `WithConnTrace()` populates DNS/Connect/TLS/TTFB timings via `net/http/httptrace`.
+- curl rendering: `Curl(ctx, endpoint, opts...)` returns the request as a runnable `curl` command without sending; `WithCurl(func(curl string))` hands it to a callback just before `Do` sends; `RequestCurl(*http.Request)` renders any request. Headers are sorted and shell-quoted; the body is read without being consumed.
 - `SlogObserver(*slog.Logger, slog.Level)` adapter for structured logging (stdlib `log/slog`); failures log at `ERROR`.
 - Runnable `Example` functions (pkg.go.dev snippets, compiled and verified by `go test`) for `Do`, `HTTPError`, `WithObserver`, `SlogObserver`, and `WithConnTrace`.
 

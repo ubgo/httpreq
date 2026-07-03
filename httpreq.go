@@ -22,6 +22,11 @@
 // logging through log/slog. Traces carry metadata only — no bodies, no
 // headers — so nothing sensitive leaks into your logs by accident.
 //
+// For debugging, render any request as a runnable curl command: [WithCurl]
+// hands the string to a callback just before [Do] sends, [Curl] returns it as
+// a value without sending, and [RequestCurl] renders an arbitrary
+// [*http.Request].
+//
 // What's deliberately NOT here:
 //
 //   - Retries, circuit breaking, rate limiting. Use a dedicated transport
@@ -44,6 +49,8 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -77,6 +84,7 @@ type request struct {
 	respInto    any
 	observers   []func(context.Context, Trace)
 	connTrace   bool
+	curlFn      func(string)
 }
 
 // Trace is metadata about one completed request attempt, delivered to the
@@ -245,6 +253,25 @@ func WithConnTrace() Option {
 	}
 }
 
+// WithCurl registers a callback that receives the request rendered as a
+// runnable `curl` command string, invoked once by [Do] immediately before the
+// request is sent — so it fires even when the send later fails. Use it to log
+// or print exactly what goes on the wire.
+//
+// SECURITY: the rendered command reproduces the FULL request, including the
+// Authorization header, cookies, and body. That is the point — it is a faithful
+// dump — but it means secrets appear in whatever you do with the string. Redact
+// before logging to a shared sink. A nil fn is ignored.
+//
+// To obtain the curl string as a value without sending, use [Curl]; to render
+// an arbitrary request you already hold, use [RequestCurl].
+func WithCurl(fn func(curl string)) Option {
+	return func(r *request) error {
+		r.curlFn = fn
+		return nil
+	}
+}
+
 // SlogObserver returns an observer that logs each completed request through
 // l at the given level. Failures (non-nil [Trace.Err]) are logged at
 // [slog.LevelError] regardless of level. Only metadata is logged — never
@@ -281,19 +308,7 @@ func SlogObserver(l *slog.Logger, level slog.Level) func(context.Context, Trace)
 // Non-2xx responses return an *HTTPError so the caller can inspect the
 // raw body. JSON decode errors are wrapped and returned.
 func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, error) {
-	r := &request{
-		method:      http.MethodGet,
-		headers:     http.Header{},
-		queryParams: url.Values{},
-		timeout:     30 * time.Second,
-	}
-	for _, opt := range opts {
-		if err := opt(r); err != nil {
-			return nil, err
-		}
-	}
-
-	finalURL, err := buildURL(endpoint, r.queryParams)
+	r, err := buildRequestState(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -306,11 +321,17 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 		ctx = httptrace.WithClientTrace(ctx, ct.clientTrace())
 	}
 
-	req, err := http.NewRequestWithContext(ctx, r.method, finalURL, r.body)
+	req, finalURL, err := r.newRequest(ctx, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("httpreq: new request: %w", err)
+		return nil, err
 	}
-	req.Header = r.headers
+
+	// Render curl before sending so a later failure still gets logged.
+	if r.curlFn != nil {
+		if c, cerr := RequestCurl(req); cerr == nil {
+			r.curlFn(c)
+		}
+	}
 
 	client := r.client
 	if client == nil {
@@ -415,6 +436,135 @@ func (c *connTimer) fill(tr *Trace, start time.Time) {
 	if !c.firstByte.IsZero() {
 		tr.TTFB = c.firstByte.Sub(start)
 	}
+}
+
+// buildRequestState applies the options onto a fresh request with the package
+// defaults. Shared by [Do] and [Curl] so both interpret options identically.
+func buildRequestState(opts []Option) (*request, error) {
+	r := &request{
+		method:      http.MethodGet,
+		headers:     http.Header{},
+		queryParams: url.Values{},
+		timeout:     30 * time.Second,
+	}
+	for _, opt := range opts {
+		if err := opt(r); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
+}
+
+// newRequest builds the *http.Request from the resolved state, returning the
+// final URL (endpoint plus query params) alongside it. It does not send.
+func (r *request) newRequest(ctx context.Context, endpoint string) (*http.Request, string, error) {
+	finalURL, err := buildURL(endpoint, r.queryParams)
+	if err != nil {
+		return nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, r.method, finalURL, r.body)
+	if err != nil {
+		return nil, "", fmt.Errorf("httpreq: new request: %w", err)
+	}
+	req.Header = r.headers
+	return req, finalURL, nil
+}
+
+// Curl builds the request from the given options and returns it rendered as a
+// runnable `curl` command string, WITHOUT sending anything. It is the value
+// form of [WithCurl]: use it to print a request for docs, a dry run, or a debug
+// log, then send the same options through [Do] when ready.
+//
+// SECURITY: the returned command contains the full request including the
+// Authorization header and body — see [WithCurl] for the redaction note.
+func Curl(ctx context.Context, endpoint string, opts ...Option) (string, error) {
+	r, err := buildRequestState(opts)
+	if err != nil {
+		return "", err
+	}
+	req, _, err := r.newRequest(ctx, endpoint)
+	if err != nil {
+		return "", err
+	}
+	return RequestCurl(req)
+}
+
+// RequestCurl renders any [*http.Request] as a runnable, copy-pasteable `curl`
+// command string. Headers are emitted in sorted order for stable output;
+// values are shell-quoted so the command survives special characters. The
+// method is included as -X for anything other than GET.
+//
+// The body is read via req.GetBody when available (as it is for requests built
+// by this package), so the request's own body is left intact and the request
+// stays sendable afterward. If GetBody is nil, req.Body is consumed and then
+// restored with an equivalent reader.
+//
+// SECURITY: the output reproduces the full request, secrets included. Redact
+// before writing to a shared log.
+func RequestCurl(req *http.Request) (string, error) {
+	var b strings.Builder
+	b.WriteString("curl")
+
+	if req.Method != "" && req.Method != http.MethodGet {
+		b.WriteString(" -X ")
+		b.WriteString(req.Method)
+	}
+
+	keys := make([]string, 0, len(req.Header))
+	for k := range req.Header {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		for _, v := range req.Header[k] {
+			b.WriteString(" -H ")
+			b.WriteString(shellQuote(k + ": " + v))
+		}
+	}
+
+	body, err := requestBodyBytes(req)
+	if err != nil {
+		return "", fmt.Errorf("httpreq: read body for curl: %w", err)
+	}
+	if len(body) > 0 {
+		b.WriteString(" --data-raw ")
+		b.WriteString(shellQuote(string(body)))
+	}
+
+	if req.URL != nil {
+		b.WriteString(" ")
+		b.WriteString(shellQuote(req.URL.String()))
+	}
+	return b.String(), nil
+}
+
+// requestBodyBytes returns the request body without disturbing req.Body,
+// preferring the replayable req.GetBody and falling back to a read-and-restore.
+func requestBodyBytes(req *http.Request) ([]byte, error) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil, nil
+	}
+	if req.GetBody != nil {
+		rc, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		return io.ReadAll(rc)
+	}
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	_ = req.Body.Close()
+	req.Body = io.NopCloser(bytes.NewReader(data))
+	return data, nil
+}
+
+// shellQuote wraps s in single quotes for a POSIX shell, escaping any embedded
+// single quote via the '\” idiom so the whole token is safe to paste.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func buildURL(endpoint string, q url.Values) (string, error) {

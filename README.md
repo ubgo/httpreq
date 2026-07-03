@@ -69,6 +69,52 @@ Reach for a full client when you need retries, rate limiting, or protocol helper
 | `WithResponseInto(any)` | JSON-decode response into v (must be a pointer). |
 | `WithObserver(func(ctx, Trace))` | Callback fired once per attempt with metadata (see Observability). Repeatable. |
 | `WithConnTrace()` | Fill DNS/Connect/TLS/TTFB timings on the `Trace` via `httptrace`. |
+| `WithCurl(func(curl string))` | Callback fired with the request as a runnable `curl` command, just before send. |
+
+## Dump as curl
+
+Get the exact request as a runnable `curl` command — to print, log, drop in a bug report, or replay on the command line. Pick by what you have in hand:
+
+**1. You're using httpreq's options → `Curl` — get the string without sending.**
+
+Build the command from the same options you'd pass to `Do`, but nothing goes on the wire:
+
+```go
+cmd, _ := httpreq.Curl(ctx, "https://api/users",
+    httpreq.WithMethod(http.MethodPost),
+    httpreq.WithJSONBody(payload),
+)
+fmt.Println(cmd)
+// curl -X POST -H 'Content-Type: application/json' --data-raw '{...}' 'https://api/users'
+```
+
+**2. You're calling `Do` → `WithCurl` — log exactly what gets sent.**
+
+The callback fires just before the request goes out, so there's no option duplication and no separate build step:
+
+```go
+_, _ = httpreq.Do(ctx, "https://api/users",
+    httpreq.WithJSONBody(payload),
+    httpreq.WithCurl(func(cmd string) { log.Println(cmd) }),
+)
+```
+
+**3. You already hold a plain `*http.Request` → `RequestCurl` — render that.**
+
+This is the low-level primitive the other two are built on. Use it when the request came from somewhere else — a middleware, a custom `http.RoundTripper`, another library — and you're not going through `Do` at all:
+
+```go
+req, _ := http.NewRequest(http.MethodPost, "https://api/users", body)
+req.Header.Set("Authorization", "Bearer "+token)
+
+cmd, _ := httpreq.RequestCurl(req)
+```
+
+If you only ever call `httpreq.Do`, reach for `WithCurl` and you'll never need `RequestCurl` directly.
+
+In all three, headers are emitted in sorted order and every value is shell-quoted, so the command survives special characters and is stable across runs. The request body is read without consuming it, so a request rendered mid-`Do` still sends normally.
+
+> **Security:** the rendered command is a *faithful, full* dump — it includes the `Authorization` header, cookies, and body. That's the point, but it means secrets land in whatever you do with the string. Redact before writing to a shared log. (This is the opposite trade-off from `Trace`, which is metadata-only by design.)
 
 ## Error types
 
@@ -154,6 +200,9 @@ Register `WithObserver` to receive a `Trace` (method, status, byte counts, durat
 
 **Will anything sensitive end up in my logs?**
 No. The `Trace` passed to observers carries metadata only — never request/response bodies and never headers — so tokens and cookies can't leak by accident. If you need header or body content, install a custom transport where you own the redaction.
+
+**How do I see the raw request as a curl command?**
+Use `WithCurl(func(cmd string){ ... })` while calling `Do` to log exactly what's sent, or `Curl(ctx, url, opts...)` to get the string without sending. If you already hold a plain `*http.Request` from elsewhere, `RequestCurl(req)` renders it. See [Dump as curl](#dump-as-curl). The output is a full, faithful dump — including `Authorization` — so redact before logging to a shared sink.
 
 **Can I send non-JSON bodies?**
 Yes. Use `WithRawBody([]byte)` for form posts, protobuf, or any pre-encoded payload, and set `Content-Type` with `WithHeader`.
