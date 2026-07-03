@@ -15,6 +15,13 @@
 //	    httpreq.WithResponseInto(&resp),
 //	)
 //
+// Observability is built in and dependency-free: register a callback with
+// [WithObserver] to receive a [Trace] (method, status, byte counts, duration,
+// typed error) once per attempt, add [WithConnTrace] for DNS/TLS/TTFB phase
+// timing via net/http/httptrace, or drop in [SlogObserver] for structured
+// logging through log/slog. Traces carry metadata only — no bodies, no
+// headers — so nothing sensitive leaks into your logs by accident.
+//
 // What's deliberately NOT here:
 //
 //   - Retries, circuit breaking, rate limiting. Use a dedicated transport
@@ -28,11 +35,14 @@ package httpreq
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"time"
 )
@@ -61,9 +71,45 @@ type request struct {
 	headers     http.Header
 	queryParams url.Values
 	body        io.Reader
+	reqBytes    int
 	timeout     time.Duration
 	client      *http.Client
 	respInto    any
+	observers   []func(context.Context, Trace)
+	connTrace   bool
+}
+
+// Trace is metadata about one completed request attempt, delivered to the
+// callbacks registered via [WithObserver]. It fires once per attempt on
+// every path — success, non-2xx ([HTTPError]), network failure, and decode
+// failure — so it is a complete lifecycle signal for logs, metrics, and
+// spans.
+//
+// SHAPE CONTRACT: Trace carries metadata ONLY. It never contains request or
+// response bodies and never contains headers (so no Authorization / cookies
+// / API keys leak into your logs by accident). If you need header or body
+// content in your observability, install a custom [http.RoundTripper] via
+// [WithHTTPClient] where you own the redaction policy.
+//
+// The DNS/Connect/TLS/TTFB fields are populated only when [WithConnTrace] is
+// set; otherwise they are zero. Connect and TLS are zero on a reused
+// keep-alive connection (no new dial/handshake happened).
+type Trace struct {
+	Method     string
+	URL        string        // final URL including query params
+	ReqBytes   int           // request body size; 0 for bodyless or streamed bodies
+	RespBytes  int           // response body size actually read
+	StatusCode int           // 0 if the request never got a response
+	Duration   time.Duration // wall time around send + full body read
+	Err        error         // nil on success; network err, *HTTPError, or decode err
+	Attempt    int           // 1 today; reserved for a future retry feature
+
+	// Connection-phase timings, set only with WithConnTrace(). See the type
+	// doc for the keep-alive caveat.
+	DNS     time.Duration
+	Connect time.Duration
+	TLS     time.Duration
+	TTFB    time.Duration // start of send to first response byte
 }
 
 // WithMethod sets the HTTP method. Default: GET. Methods are not
@@ -120,6 +166,7 @@ func WithJSONBody(body any) Option {
 			return fmt.Errorf("httpreq: marshal body: %w", err)
 		}
 		r.body = bytes.NewReader(data)
+		r.reqBytes = len(data)
 		r.headers.Set("Content-Type", "application/json")
 		return nil
 	}
@@ -131,6 +178,7 @@ func WithJSONBody(body any) Option {
 func WithRawBody(body []byte) Option {
 	return func(r *request) error {
 		r.body = bytes.NewReader(body)
+		r.reqBytes = len(body)
 		return nil
 	}
 }
@@ -168,6 +216,64 @@ func WithResponseInto(v any) Option {
 	}
 }
 
+// WithObserver registers a callback invoked exactly once when the request
+// attempt completes — on success and on every failure path. See [Trace] for
+// what is delivered (metadata only; no bodies or headers). Repeat the option
+// to register multiple observers; all are called in registration order.
+//
+// The callback runs synchronously on the calling goroutine after the body
+// has been read, so keep it fast: record a metric, emit a log line, annotate
+// a span. Do not block on I/O inside it. A nil fn is ignored.
+func WithObserver(fn func(context.Context, Trace)) Option {
+	return func(r *request) error {
+		if fn != nil {
+			r.observers = append(r.observers, fn)
+		}
+		return nil
+	}
+}
+
+// WithConnTrace enables connection-phase timing via [net/http/httptrace],
+// populating the DNS/Connect/TLS/TTFB fields of the [Trace] passed to
+// observers. It has a small per-request overhead and only matters when an
+// observer is also registered. On a reused keep-alive connection the
+// Connect and TLS fields stay zero because no new dial or handshake ran.
+func WithConnTrace() Option {
+	return func(r *request) error {
+		r.connTrace = true
+		return nil
+	}
+}
+
+// SlogObserver returns an observer that logs each completed request through
+// l at the given level. Failures (non-nil [Trace.Err]) are logged at
+// [slog.LevelError] regardless of level. Only metadata is logged — never
+// bodies or headers. If l is nil, [slog.Default] is used.
+//
+// Wire it in with [WithObserver]:
+//
+//	httpreq.WithObserver(httpreq.SlogObserver(logger, slog.LevelInfo))
+func SlogObserver(l *slog.Logger, level slog.Level) func(context.Context, Trace) {
+	if l == nil {
+		l = slog.Default()
+	}
+	return func(ctx context.Context, t Trace) {
+		args := []any{
+			"method", t.Method,
+			"url", t.URL,
+			"status", t.StatusCode,
+			"duration", t.Duration,
+			"req_bytes", t.ReqBytes,
+			"resp_bytes", t.RespBytes,
+		}
+		if t.Err != nil {
+			l.Log(ctx, slog.LevelError, "httpreq request failed", append(args, "err", t.Err)...)
+			return
+		}
+		l.Log(ctx, level, "httpreq request", args...)
+	}
+}
+
 // Do builds and sends the request. The returned *http.Response has its
 // Body already drained and closed; the body bytes have been routed into
 // the option supplied via [WithResponseInto], if any.
@@ -192,6 +298,14 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 		return nil, err
 	}
 
+	// connTrace is attached to the context before the request is built so
+	// httptrace fires for the whole exchange, including dial and TLS.
+	var ct *connTimer
+	if r.connTrace {
+		ct = &connTimer{}
+		ctx = httptrace.WithClientTrace(ctx, ct.clientTrace())
+	}
+
 	req, err := http.NewRequestWithContext(ctx, r.method, finalURL, r.body)
 	if err != nil {
 		return nil, fmt.Errorf("httpreq: new request: %w", err)
@@ -207,32 +321,100 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 		client = &clone
 	}
 
+	// Observer bookkeeping. tr is mutated as the attempt progresses and read
+	// in the deferred fire, so every return path below reports correctly.
+	// start is set immediately before the send so Duration and TTFB are
+	// measured from the same origin.
+	tr := Trace{Method: r.method, URL: finalURL, ReqBytes: r.reqBytes, Attempt: 1}
+	start := time.Now()
+	if len(r.observers) > 0 {
+		defer func() {
+			tr.Duration = time.Since(start)
+			if ct != nil {
+				ct.fill(&tr, start)
+			}
+			for _, obs := range r.observers {
+				obs(ctx, tr)
+			}
+		}()
+	}
+
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("httpreq: do: %w", err)
+		err = fmt.Errorf("httpreq: do: %w", err)
+		tr.Err = err
+		return nil, err
 	}
 	defer res.Body.Close()
+	tr.StatusCode = res.StatusCode
 
 	body, err := io.ReadAll(res.Body)
+	tr.RespBytes = len(body)
 	if err != nil {
-		return res, fmt.Errorf("httpreq: read body: %w", err)
+		err = fmt.Errorf("httpreq: read body: %w", err)
+		tr.Err = err
+		return res, err
 	}
 
 	if res.StatusCode >= 300 {
-		return res, &HTTPError{
+		herr := &HTTPError{
 			StatusCode: res.StatusCode,
 			Status:     res.Status,
 			Body:       body,
 		}
+		tr.Err = herr
+		return res, herr
 	}
 
 	if r.respInto != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, r.respInto); err != nil {
-			return res, fmt.Errorf("httpreq: decode response: %w", err)
+			err = fmt.Errorf("httpreq: decode response: %w", err)
+			tr.Err = err
+			return res, err
 		}
 	}
 
 	return res, nil
+}
+
+// connTimer captures httptrace connection-phase timestamps. Each hook is
+// called on the client's connection goroutine; a single request never fires
+// the same phase concurrently, so plain fields are safe without locking.
+type connTimer struct {
+	dnsStart, dnsDone   time.Time
+	connStart, connDone time.Time
+	tlsStart, tlsDone   time.Time
+	firstByte           time.Time
+}
+
+func (c *connTimer) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		DNSStart:             func(httptrace.DNSStartInfo) { c.dnsStart = time.Now() },
+		DNSDone:              func(httptrace.DNSDoneInfo) { c.dnsDone = time.Now() },
+		ConnectStart:         func(_, _ string) { c.connStart = time.Now() },
+		ConnectDone:          func(_, _ string, _ error) { c.connDone = time.Now() },
+		TLSHandshakeStart:    func() { c.tlsStart = time.Now() },
+		TLSHandshakeDone:     func(tls.ConnectionState, error) { c.tlsDone = time.Now() },
+		GotFirstResponseByte: func() { c.firstByte = time.Now() },
+	}
+}
+
+// fill computes phase durations into tr. Fields stay zero when the phase did
+// not run (e.g. TLS on plain HTTP, or Connect/DNS on a reused keep-alive
+// connection). start is the send origin used for TTFB.
+func (c *connTimer) fill(tr *Trace, start time.Time) {
+	if !c.dnsStart.IsZero() && !c.dnsDone.IsZero() {
+		tr.DNS = c.dnsDone.Sub(c.dnsStart)
+	}
+	if !c.connStart.IsZero() && !c.connDone.IsZero() {
+		tr.Connect = c.connDone.Sub(c.connStart)
+	}
+	if !c.tlsStart.IsZero() && !c.tlsDone.IsZero() {
+		tr.TLS = c.tlsDone.Sub(c.tlsStart)
+	}
+	if !c.firstByte.IsZero() {
+		tr.TTFB = c.firstByte.Sub(start)
+	}
 }
 
 func buildURL(endpoint string, q url.Values) (string, error) {
