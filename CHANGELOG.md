@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-07-03
+
 ### Added
 
 - Observability, dependency-free. `WithObserver(func(ctx, Trace))` fires once per request attempt on every path (success, non-2xx, network error, decode error) with metadata only — no bodies or headers.
@@ -23,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WithRequest(func(*http.Request) error)` hook mutates the fully built request just before send — for request signing, or fields net/http keeps off the header map (Host, cookies, Close, Trailer). Runs for `Curl` too; a returned error aborts before sending.
 - `WithHeaders(http.Header)` and `WithQuery(url.Values)` bulk setters, adding a whole set of headers or query params at once (append semantics).
 - `SlogObserver(*slog.Logger, slog.Level)` adapter for structured logging (stdlib `log/slog`); failures log at `ERROR`.
-- Runnable `Example` functions (pkg.go.dev snippets, compiled and verified by `go test`) for `Do`, `HTTPError`, `WithObserver`, `SlogObserver`, and `WithConnTrace`.
+- Runnable `Example` functions (pkg.go.dev snippets, compiled and verified by `go test`) covering the exported API — `Do`, `Curl`, `RequestCurl`, `HTTPError`, and every new option.
 
 ## [v0.1.0] - 2026-05-01
 
@@ -36,5 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WithResponseInto`.
 - `HTTPError` for non-2xx responses, retains raw body.
 
-[Unreleased]: https://github.com/ubgo/httpreq/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ubgo/httpreq/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/ubgo/httpreq/compare/v0.1.0...v0.2.0
 [v0.1.0]: https://github.com/ubgo/httpreq/releases/tag/v0.1.0
