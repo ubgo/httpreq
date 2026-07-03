@@ -446,7 +446,7 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 		tr.Err = err
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	tr.StatusCode = res.StatusCode
 
 	body, err := io.ReadAll(res.Body)

@@ -16,6 +16,14 @@ linters:
     - misspell
     - unconvert
     - gocritic
+  exclusions:
+    rules:
+      # HTTP handler signatures (func(w, r)) in tests frequently leave one
+      # param unused; the signature is fixed, so this is noise, not a smell.
+      - path: _test\.go
+        linters:
+          - revive
+        text: unused-parameter
 
 issues:
   max-issues-per-linter: 0
