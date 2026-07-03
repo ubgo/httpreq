@@ -26,8 +26,11 @@
 // standard library: bearer and basic auth ([WithBearerToken], [WithBasicAuth]),
 // JSON / form / raw bodies ([WithJSONBody], [WithFormBody], [WithRawBody]),
 // and flexible response handling — decode JSON ([WithResponseInto]), grab the
-// raw bytes for non-JSON payloads ([WithResponseBytes]), or decode a structured
-// error body on non-2xx ([WithErrorInto]).
+// raw bytes for non-JSON payloads ([WithResponseBytes]), stream large downloads
+// to a writer ([WithResponseWriter]), or decode a structured error body on
+// non-2xx ([WithErrorInto]). [WithExpectStatus] accepts extra status codes as
+// success (e.g. 304), and [WithRequest] is an escape hatch to mutate or sign
+// the built request before it is sent.
 //
 // For debugging, render any request as a runnable curl command: [WithCurl]
 // hands the string to a callback just before [Do] sends, [Curl] returns it as
@@ -90,19 +93,22 @@ func (e *HTTPError) Error() string {
 type Option func(*request) error
 
 type request struct {
-	method      string
-	headers     http.Header
-	queryParams url.Values
-	body        io.Reader
-	reqBytes    int
-	timeout     time.Duration
-	client      *http.Client
-	respInto    any
-	rawRespInto *[]byte
-	errInto     any
-	observers   []func(context.Context, Trace)
-	connTrace   bool
-	curlFn      func(string)
+	method       string
+	headers      http.Header
+	queryParams  url.Values
+	body         io.Reader
+	reqBytes     int
+	timeout      time.Duration
+	client       *http.Client
+	respInto     any
+	rawRespInto  *[]byte
+	errInto      any
+	observers    []func(context.Context, Trace)
+	connTrace    bool
+	curlFn       func(string)
+	reqFns       []func(*http.Request) error
+	respWriter   io.Writer
+	expectStatus map[int]bool
 }
 
 // Trace is metadata about one completed request attempt, delivered to the
@@ -271,6 +277,29 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
+// WithRequest registers a hook that receives the fully built [*http.Request]
+// after all other options are applied and just before it is sent, letting you
+// set anything the options don't model: request signing (an auth header
+// computed over the assembled request), fields net/http keeps off the header
+// map ([http.Request.Host], cookies via [http.Request.AddCookie],
+// [http.Request.Close], [http.Request.Trailer]), or any one-off tweak.
+//
+// Returning an error aborts [Do] (and [Curl]) before sending, wrapped as
+// "httpreq: request hook". Repeat the option to chain hooks; they run in order.
+// The hook also runs for [Curl]/[WithCurl], so a curl dump reflects the final,
+// mutated request. A nil hook is ignored.
+//
+// This is an escape hatch — with it comes the ability to build an invalid
+// request. Prefer a dedicated option when one exists.
+func WithRequest(fn func(*http.Request) error) Option {
+	return func(r *request) error {
+		if fn != nil {
+			r.reqFns = append(r.reqFns, fn)
+		}
+		return nil
+	}
+}
+
 // WithResponseInto JSON-decodes the response body into v. v must be a
 // pointer. Skip this option to discard the body.
 func WithResponseInto(v any) Option {
@@ -300,6 +329,40 @@ func WithResponseBytes(b *[]byte) Option {
 func WithErrorInto(v any) Option {
 	return func(r *request) error {
 		r.errInto = v
+		return nil
+	}
+}
+
+// WithResponseWriter streams a successful response body straight to w via
+// io.Copy instead of buffering it in memory — the way to handle downloads or
+// responses larger than RAM. Compose sinks with [io.MultiWriter] (e.g. write
+// to a file and a hash at once).
+//
+// It applies only to success responses (status < 300, or a code allowed by
+// [WithExpectStatus]). Error responses are still buffered so the [HTTPError]
+// keeps the raw body. Because the body is streamed, not held, this option is
+// mutually exclusive with [WithResponseInto] and [WithResponseBytes] on the
+// same call — the writer takes precedence and those are not populated. A nil w
+// is ignored (the body is buffered as usual).
+func WithResponseWriter(w io.Writer) Option {
+	return func(r *request) error {
+		r.respWriter = w
+		return nil
+	}
+}
+
+// WithExpectStatus marks additional status codes as success, so they return a
+// nil error instead of an [HTTPError] and their body is decoded/streamed like
+// any 2xx. The classic case is 304 Not Modified with conditional requests, or
+// a 3xx you handle yourself. Codes already in 2xx need not be listed.
+func WithExpectStatus(codes ...int) Option {
+	return func(r *request) error {
+		if r.expectStatus == nil {
+			r.expectStatus = make(map[int]bool, len(codes))
+		}
+		for _, c := range codes {
+			r.expectStatus[c] = true
+		}
 		return nil
 	}
 }
@@ -449,6 +512,23 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 	defer func() { _ = res.Body.Close() }()
 	tr.StatusCode = res.StatusCode
 
+	// A status is an error unless it is 2xx or explicitly allowed via
+	// WithExpectStatus.
+	isErr := res.StatusCode >= 300 && !r.expectStatus[res.StatusCode]
+
+	// Stream a successful body straight to the writer without buffering. Error
+	// bodies fall through to the buffered path so the HTTPError keeps them.
+	if !isErr && r.respWriter != nil {
+		n, err := io.Copy(r.respWriter, res.Body)
+		tr.RespBytes = int(n)
+		if err != nil {
+			err = fmt.Errorf("httpreq: stream body: %w", err)
+			tr.Err = err
+			return res, err
+		}
+		return res, nil
+	}
+
 	body, err := io.ReadAll(res.Body)
 	tr.RespBytes = len(body)
 	if err != nil {
@@ -462,7 +542,7 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 		*r.rawRespInto = body
 	}
 
-	if res.StatusCode >= 300 {
+	if isErr {
 		herr := &HTTPError{
 			StatusCode: res.StatusCode,
 			Status:     res.Status,
@@ -563,6 +643,13 @@ func (r *request) newRequest(ctx context.Context, endpoint string) (*http.Reques
 	// dump reflects exactly what goes on the wire.
 	if _, ok := req.Header["User-Agent"]; !ok {
 		req.Header.Set("User-Agent", DefaultUserAgent)
+	}
+	// Request hooks run last so they see the final request (headers, UA, body)
+	// — e.g. to sign it. An error here aborts before sending.
+	for _, fn := range r.reqFns {
+		if err := fn(req); err != nil {
+			return nil, "", fmt.Errorf("httpreq: request hook: %w", err)
+		}
 	}
 	return req, finalURL, nil
 }

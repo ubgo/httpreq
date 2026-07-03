@@ -36,7 +36,6 @@ _, err := httpreq.Do(ctx, "https://api.example.com/users",
 
 - Retries / backoff / circuit breaking — install those at the transport
   layer (`http.RoundTripper`).
-- Streaming responses — for large bodies use `net/http` directly.
 - GraphQL helpers — those live in separate packages.
 - A global default client — pass `WithHTTPClient` if you need pooling.
 
@@ -114,6 +113,40 @@ _, err := httpreq.Do(ctx, url, httpreq.WithUserAgent("my-service/1.4.2"))
 // Unset, httpreq sends "httpreq/<version>"; pass "" to send none.
 ```
 
+**Download a large file** — stream to disk (and checksum) without buffering in memory:
+
+```go
+f, _ := os.Create("backup.zip")
+defer f.Close()
+h := sha256.New()
+_, err := httpreq.Do(ctx, "https://example.com/backup.zip",
+    httpreq.WithResponseWriter(io.MultiWriter(f, h)),
+)
+// f holds the file; h.Sum(nil) is its checksum — one pass, constant memory.
+```
+
+**Sign a request** — compute an auth header over the fully assembled request:
+
+```go
+_, err := httpreq.Do(ctx, url,
+    httpreq.WithJSONBody(payload),
+    httpreq.WithRequest(func(req *http.Request) error {
+        req.Header.Set("X-Signature", sign(req)) // sees final method, path, headers, body
+        return nil                               // returning an error aborts before send
+    }),
+)
+```
+
+**Conditional request** — treat 304 Not Modified as success, not an error:
+
+```go
+_, err := httpreq.Do(ctx, url,
+    httpreq.WithHeader("If-None-Match", etag),
+    httpreq.WithExpectStatus(http.StatusNotModified),
+)
+// err is nil on 304; check the response status to branch on cache hit.
+```
+
 ## Options
 
 | Option | Effect |
@@ -131,7 +164,10 @@ _, err := httpreq.Do(ctx, url, httpreq.WithUserAgent("my-service/1.4.2"))
 | `WithHTTPClient(*http.Client)` | Override the underlying client. |
 | `WithResponseInto(any)` | JSON-decode response into v (must be a pointer). |
 | `WithResponseBytes(*[]byte)` | Capture the raw response body (any status, any content type). |
+| `WithResponseWriter(io.Writer)` | Stream a successful body to a writer instead of buffering (large downloads). |
 | `WithErrorInto(any)` | JSON-decode a structured error body on non-2xx into v. |
+| `WithExpectStatus(...int)` | Treat listed non-2xx codes (e.g. 304) as success. |
+| `WithRequest(func(*http.Request) error)` | Mutate the built request before send (signing, Host, cookies). Repeatable. |
 | `WithObserver(func(ctx, Trace))` | Callback fired once per attempt with metadata (see Observability). Repeatable. |
 | `WithConnTrace()` | Fill DNS/Connect/TLS/TTFB timings on the `Trace` via `httptrace`. |
 | `WithCurl(func(curl string))` | Callback fired with the request as a runnable `curl` command, just before send. |
@@ -274,6 +310,9 @@ Yes. Use `WithFormBody(url.Values)` for `application/x-www-form-urlencoded` post
 
 **How do I read a non-JSON response?**
 Use `WithResponseBytes(&raw)` to capture the exact response bytes regardless of content type — HTML, text, XML, binary. It works alongside `WithResponseInto` and is populated on error responses too. See [Recipes](#recipes).
+
+**Can it handle responses larger than memory?**
+Yes. `WithResponseWriter(w)` streams the body straight to any `io.Writer` (a file, a hash, an `io.MultiWriter`) via `io.Copy`, so memory stays constant regardless of size. It applies to successful responses; error bodies are still buffered into the `HTTPError`. See [Recipes](#recipes).
 
 **Is the API stable?**
 The module is pre-1.0. The surface is small and unlikely to change much, but breaking changes are possible before v1.0.0; after that they require a major version bump.

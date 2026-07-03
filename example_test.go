@@ -121,6 +121,48 @@ func ExampleWithErrorInto() {
 	// Output: 400 invalid_field: name is required
 }
 
+// ExampleWithResponseWriter streams the response body to a writer instead of
+// buffering it in memory — the way to download large files. Compose sinks with
+// io.MultiWriter to, e.g., write to a file and hash in one pass.
+func ExampleWithResponseWriter() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("streamed payload"))
+	}))
+	defer srv.Close()
+
+	// Stream straight to stdout (use an *os.File for a real download).
+	_, err := httpreq.Do(context.Background(), srv.URL, httpreq.WithResponseWriter(os.Stdout))
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	// Output: streamed payload
+}
+
+// ExampleWithRequest signs the fully built request just before it is sent — the
+// escape hatch for anything the options don't model.
+func ExampleWithRequest() {
+	_, _ = httpreq.Do(context.Background(), "https://api.example.com/x",
+		httpreq.WithRequest(func(req *http.Request) error {
+			// Set fields net/http keeps off the header map, or sign the request.
+			req.Host = "internal.service"
+			req.Header.Set("X-Signature", "computed-over-the-request")
+			return nil
+		}),
+	)
+}
+
+// ExampleWithExpectStatus treats 304 Not Modified as success instead of an
+// error, for conditional requests.
+func ExampleWithExpectStatus() {
+	_, err := httpreq.Do(context.Background(), "https://api.example.com/resource",
+		httpreq.WithHeader("If-None-Match", `"etag-value"`),
+		httpreq.WithExpectStatus(http.StatusNotModified),
+	)
+	// err is nil on a 304 now, instead of an *HTTPError.
+	_ = err
+}
+
 // ExampleWithBasicAuth sends HTTP Basic credentials. It overrides any bearer
 // token set earlier — the last auth option wins.
 func ExampleWithBasicAuth() {

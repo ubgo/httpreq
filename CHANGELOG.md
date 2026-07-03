@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WithResponseBytes(*[]byte)` captures the raw response body for any status and any content type — the way to read non-JSON responses.
 - `WithErrorInto(any)` decodes a structured error payload from a non-2xx body while still returning the `HTTPError`.
 - `WithUserAgent(string)` and a default `User-Agent` of `httpreq/<version>` (sent only when the caller sets none; pass `""` to suppress). Exposed as `Version` and `DefaultUserAgent`.
+- `WithResponseWriter(io.Writer)` streams a successful response body to a writer via `io.Copy` instead of buffering — for downloads larger than memory. Error responses are still buffered into the `HTTPError`.
+- `WithExpectStatus(...int)` accepts additional status codes (e.g. 304 Not Modified) as success instead of returning an `HTTPError`.
+- `WithRequest(func(*http.Request) error)` hook mutates the fully built request just before send — for request signing, or fields net/http keeps off the header map (Host, cookies, Close, Trailer). Runs for `Curl` too; a returned error aborts before sending.
 - `SlogObserver(*slog.Logger, slog.Level)` adapter for structured logging (stdlib `log/slog`); failures log at `ERROR`.
 - Runnable `Example` functions (pkg.go.dev snippets, compiled and verified by `go test`) for `Do`, `HTTPError`, `WithObserver`, `SlogObserver`, and `WithConnTrace`.
 

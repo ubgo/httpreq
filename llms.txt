@@ -17,7 +17,9 @@ httpreq collapses the most common service call — marshal a request body, set h
 - `WithMethod`, `WithHeader`, `WithUserAgent`, `WithQueryParam`: request shaping. A default User-Agent (`httpreq/<version>`) is sent when the caller sets none.
 - `WithBearerToken`, `WithBasicAuth`: authentication (last auth option wins).
 - `WithJSONBody`, `WithFormBody`, `WithRawBody`: JSON, URL-encoded form, or verbatim bodies.
-- `WithResponseInto`, `WithResponseBytes`, `WithErrorInto`: decode JSON into a target, capture the raw body (any content type), or decode a structured error body on non-2xx.
+- `WithResponseInto`, `WithResponseBytes`, `WithResponseWriter`, `WithErrorInto`: decode JSON into a target, capture the raw body, stream a large body to an io.Writer, or decode a structured error body on non-2xx.
+- `WithExpectStatus(...int)`: accept extra status codes (e.g. 304) as success.
+- `WithRequest(func(*http.Request) error)`: escape hatch to mutate or sign the built request before send (also runs for Curl).
 - `WithTimeout`, `WithHTTPClient`: transport control and connection pooling.
 - `WithObserver(func(ctx, Trace))`: fires once per attempt with metadata only (no bodies, no headers).
 - `WithConnTrace()`: adds DNS/Connect/TLS/TTFB phase timing to the `Trace`.
