@@ -1,0 +1,17 @@
+# Normalize line endings to LF on checkin, auto on checkout.
+* text=auto eol=lf
+
+# Explicitly binary — never touch line endings.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Go source is always LF.
+*.go text eol=lf
+
+# Collapse noise in diffs / language stats for generated and vendored trees.
+go.sum linguist-generated=true
+*_test.go linguist-language=Go

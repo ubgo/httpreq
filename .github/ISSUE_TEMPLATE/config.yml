@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / usage help
+    url: https://github.com/ubgo/httpreq/discussions
+    about: Ask how to use httpreq, or discuss an idea before filing a feature request.
+  - name: Security vulnerability
+    url: https://github.com/ubgo/httpreq/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue.

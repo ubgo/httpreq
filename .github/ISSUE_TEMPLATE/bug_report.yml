@@ -1,0 +1,40 @@
+name: Bug report
+description: Something in httpreq behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please include a minimal reproduction — it is the single biggest factor in getting a fix out quickly.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+      placeholder: Do(...) returned X, expected Y.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest Go snippet (ideally a failing test) that shows the problem.
+      render: go
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: httpreq version
+      description: Tag or commit SHA (from go.mod / go list -m).
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Output of `go version`.
+      placeholder: go1.24 darwin/arm64
+    validations:
+      required: true

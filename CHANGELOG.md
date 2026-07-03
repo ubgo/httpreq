@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Trace` type carrying method, URL, request/response byte counts, status, duration, typed error, attempt number, and optional connection-phase timings.
 - `WithConnTrace()` populates DNS/Connect/TLS/TTFB timings via `net/http/httptrace`.
 - `SlogObserver(*slog.Logger, slog.Level)` adapter for structured logging (stdlib `log/slog`); failures log at `ERROR`.
+- Runnable `Example` functions (pkg.go.dev snippets, compiled and verified by `go test`) for `Do`, `HTTPError`, `WithObserver`, `SlogObserver`, and `WithConnTrace`.
 
 ## [v0.1.0] - 2026-05-01
 

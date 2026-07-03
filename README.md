@@ -1,7 +1,13 @@
 # httpreq
 
-> JSON-over-HTTP convenience layer on top of `net/http`. Stdlib-only.
-> One function, one options pattern, no surprises.
+[![Go Reference](https://pkg.go.dev/badge/github.com/ubgo/httpreq.svg)](https://pkg.go.dev/github.com/ubgo/httpreq)
+[![Go Report Card](https://goreportcard.com/badge/github.com/ubgo/httpreq)](https://goreportcard.com/report/github.com/ubgo/httpreq)
+[![Tests](https://github.com/ubgo/httpreq/actions/workflows/test.yml/badge.svg)](https://github.com/ubgo/httpreq/actions/workflows/test.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go 1.24+](https://img.shields.io/badge/go-1.24%2B-00ADD8.svg)](go.mod)
+![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
+
+> JSON-over-HTTP convenience layer on top of `net/http`. Stdlib-only. One function, one options pattern, typed errors, and dependency-free observability. No surprises.
 
 ```go
 import "github.com/ubgo/httpreq"
@@ -32,6 +38,21 @@ _, err := httpreq.Do(ctx, "https://api.example.com/users",
 - Streaming responses — for large bodies use `net/http` directly.
 - GraphQL helpers — those live in separate packages.
 - A global default client — pass `WithHTTPClient` if you need pooling.
+
+## Why httpreq?
+
+The standard library is the right foundation, but the most common service call — marshal a body, set headers, send with a timeout, decode JSON, turn non-2xx into an error — is ~15 lines of boilerplate every time. Full-featured clients solve that by pulling in a dependency tree and a large API surface. httpreq takes the opposite bet: a single `Do` call, a handful of composable options, and **zero third-party dependencies** — so it never conflicts with your other modules and never surprises you at upgrade time.
+
+| | httpreq | net/http (raw) | resty / req |
+|---|---|---|---|
+| Third-party dependencies | **0** | 0 | several |
+| Lines for a JSON POST + decode | ~5 | ~15 | ~5 |
+| Typed non-2xx error with raw body | ✅ `HTTPError` | ❌ manual | ⚠️ varies |
+| Built-in observability (trace/slog/timing) | ✅ dependency-free | ❌ | ✅ |
+| API surface to learn | tiny | n/a | large |
+| Connection pooling | ✅ via `WithHTTPClient` | ✅ | ✅ |
+
+Reach for a full client when you need retries, rate limiting, or protocol helpers out of the box. Reach for httpreq when you want the stdlib with the boilerplate removed and nothing else added.
 
 ## Options
 
@@ -120,6 +141,30 @@ client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
 _, err := httpreq.Do(ctx, "https://api/x", httpreq.WithHTTPClient(client))
 ```
 
+## FAQ
+
+**Does httpreq have any third-party dependencies?**
+No. `go.mod` is stdlib-only and stays that way — that's a hard rule, enforced in CI. Everything, including the observability layer, is built on `net/http`, `log/slog`, and `net/http/httptrace`.
+
+**How do I add retries or a circuit breaker?**
+Install them at the transport layer and pass the client with `WithHTTPClient`. Because httpreq wraps a standard `*http.Client`, any `http.RoundTripper`-based middleware (retry, tracing, rate limiting) composes without httpreq needing to know about it.
+
+**How do I get request logging, metrics, or tracing?**
+Register `WithObserver` to receive a `Trace` (method, status, byte counts, duration, typed error) once per request. Use the built-in `SlogObserver` for `log/slog` logging, feed the `Trace` into a Prometheus histogram, or add `WithConnTrace()` for DNS/TLS/TTFB timing. OpenTelemetry works via a transport — see [Observability](#observability). No dependency is added on your behalf.
+
+**Will anything sensitive end up in my logs?**
+No. The `Trace` passed to observers carries metadata only — never request/response bodies and never headers — so tokens and cookies can't leak by accident. If you need header or body content, install a custom transport where you own the redaction.
+
+**Can I send non-JSON bodies?**
+Yes. Use `WithRawBody([]byte)` for form posts, protobuf, or any pre-encoded payload, and set `Content-Type` with `WithHeader`.
+
+**Is the API stable?**
+The module is pre-1.0. The surface is small and unlikely to change much, but breaking changes are possible before v1.0.0; after that they require a major version bump.
+
 ## License
 
 Apache-2.0 — see [`LICENSE`](LICENSE).
+
+---
+
+<sub>Go HTTP client · JSON API client for Go · net/http wrapper · stdlib-only · zero-dependency · typed HTTP errors · request observability · slog HTTP logging · httptrace timing</sub>

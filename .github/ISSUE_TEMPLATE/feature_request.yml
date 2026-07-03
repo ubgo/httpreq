@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a new option or capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This package is deliberately small and stdlib-only. Before filing, check the out-of-scope list in CONTRIBUTING.md (retries, rate limiting, protocol helpers belong elsewhere).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that httpreq makes hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: Sketch the option or function signature and how it composes with the existing surface.
+      render: go
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Can this be done today via WithHTTPClient / a custom RoundTripper? Why is that insufficient?
+    validations:
+      required: false

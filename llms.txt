@@ -1,0 +1,27 @@
+# httpreq
+
+> A small, dependency-free JSON-over-HTTP client convenience layer on top of Go's `net/http`. One function (`Do`), an options pattern, typed errors, and built-in dependency-free observability (request tracing, connection-phase timing, `log/slog` logging).
+
+httpreq collapses the most common service call — marshal a request body, set headers, send with a timeout, decode a JSON response, and turn non-2xx into a typed error — into a single `Do(ctx, url, opts...)` call. It is stdlib-only: `go.mod` has zero third-party dependencies. It deliberately excludes retries, circuit breaking, rate limiting, and protocol-specific helpers; those belong at the transport layer (`http.RoundTripper`) or in dedicated packages.
+
+## Docs
+
+- [README](https://github.com/ubgo/httpreq/blob/main/README.md): overview, options table, error handling, observability guide
+- [Go package docs](https://pkg.go.dev/github.com/ubgo/httpreq): full API reference with runnable examples
+- [CHANGELOG](https://github.com/ubgo/httpreq/blob/main/CHANGELOG.md): release history
+- [CONTRIBUTING](https://github.com/ubgo/httpreq/blob/main/CONTRIBUTING.md): scope, conventions, local checks
+
+## Core API
+
+- `Do(ctx, endpoint, opts ...Option) (*http.Response, error)`: build and send a request; body is read, drained, and (optionally) JSON-decoded.
+- `WithMethod`, `WithHeader`, `WithBearerToken`, `WithQueryParam`: request shaping.
+- `WithJSONBody`, `WithRawBody`, `WithResponseInto`: bodies and response decoding.
+- `WithTimeout`, `WithHTTPClient`: transport control and connection pooling.
+- `WithObserver(func(ctx, Trace))`: fires once per attempt with metadata only (no bodies, no headers).
+- `WithConnTrace()`: adds DNS/Connect/TLS/TTFB phase timing to the `Trace`.
+- `SlogObserver(*slog.Logger, slog.Level)`: structured-logging adapter; failures log at ERROR.
+- `HTTPError`: returned for non-2xx responses; retains the raw body.
+
+## Optional
+
+- [Observability patterns](https://github.com/ubgo/httpreq/blob/main/README.md#observability): wiring Prometheus and OpenTelemetry without adding dependencies.
