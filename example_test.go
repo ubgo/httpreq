@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 
 	"github.com/ubgo/httpreq"
@@ -81,6 +82,75 @@ func ExampleSlogObserver() {
 	)
 }
 
+// ExampleWithResponseBytes captures a non-JSON response body verbatim — useful
+// for HTML, text, XML, or binary payloads that WithResponseInto can't decode.
+func ExampleWithResponseBytes() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("<h1>hello</h1>"))
+	}))
+	defer srv.Close()
+
+	var raw []byte
+	if _, err := httpreq.Do(context.Background(), srv.URL, httpreq.WithResponseBytes(&raw)); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	fmt.Println(string(raw))
+	// Output: <h1>hello</h1>
+}
+
+// ExampleWithErrorInto decodes a structured error payload from a non-2xx
+// response while still returning the *HTTPError.
+func ExampleWithErrorInto() {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid_field","message":"name is required"}`))
+	}))
+	defer srv.Close()
+
+	var apiErr struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	_, err := httpreq.Do(context.Background(), srv.URL, httpreq.WithErrorInto(&apiErr))
+
+	var herr *httpreq.HTTPError
+	if errors.As(err, &herr) {
+		fmt.Printf("%d %s: %s\n", herr.StatusCode, apiErr.Code, apiErr.Message)
+	}
+	// Output: 400 invalid_field: name is required
+}
+
+// ExampleWithBasicAuth sends HTTP Basic credentials. It overrides any bearer
+// token set earlier — the last auth option wins.
+func ExampleWithBasicAuth() {
+	_, _ = httpreq.Do(context.Background(), "https://api.example.com/private",
+		httpreq.WithBasicAuth("alice", "s3cret"),
+	)
+}
+
+// ExampleWithFormBody posts application/x-www-form-urlencoded values, the shape
+// OAuth token endpoints expect.
+func ExampleWithFormBody() {
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("scope", "read")
+
+	_, _ = httpreq.Do(context.Background(), "https://auth.example.com/token",
+		httpreq.WithMethod(http.MethodPost),
+		httpreq.WithBasicAuth("client-id", "client-secret"),
+		httpreq.WithFormBody(form),
+	)
+}
+
+// ExampleWithUserAgent sets a custom User-Agent. Without this option,
+// httpreq.DefaultUserAgent is sent; pass "" to suppress the header entirely.
+func ExampleWithUserAgent() {
+	_, _ = httpreq.Do(context.Background(), "https://api.example.com/x",
+		httpreq.WithUserAgent("my-service/1.4.2"),
+	)
+}
+
 // ExampleCurl renders a request as a runnable curl command without sending it —
 // handy for logging or reproducing a call on the command line.
 func ExampleCurl() {
@@ -94,7 +164,7 @@ func ExampleCurl() {
 		return
 	}
 	fmt.Println(cmd)
-	// Output: curl -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' --data-raw '{"name":"alice"}' 'https://api.example.com/users'
+	// Output: curl -X POST -H 'Accept: application/json' -H 'Content-Type: application/json' -H 'User-Agent: httpreq/0.2.0' --data-raw '{"name":"alice"}' 'https://api.example.com/users'
 }
 
 // ExampleRequestCurl renders a plain *http.Request you already hold — built

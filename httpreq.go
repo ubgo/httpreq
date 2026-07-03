@@ -22,6 +22,13 @@
 // logging through log/slog. Traces carry metadata only — no bodies, no
 // headers — so nothing sensitive leaks into your logs by accident.
 //
+// Beyond the basics it covers common day-to-day needs without leaving the
+// standard library: bearer and basic auth ([WithBearerToken], [WithBasicAuth]),
+// JSON / form / raw bodies ([WithJSONBody], [WithFormBody], [WithRawBody]),
+// and flexible response handling — decode JSON ([WithResponseInto]), grab the
+// raw bytes for non-JSON payloads ([WithResponseBytes]), or decode a structured
+// error body on non-2xx ([WithErrorInto]).
+//
 // For debugging, render any request as a runnable curl command: [WithCurl]
 // hands the string to a callback just before [Do] sends, [Curl] returns it as
 // a value without sending, and [RequestCurl] renders an arbitrary
@@ -41,6 +48,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +61,14 @@ import (
 	"strings"
 	"time"
 )
+
+// Version is the package version, used only to build [DefaultUserAgent]. Bump
+// it on release.
+const Version = "0.2.0"
+
+// DefaultUserAgent is sent as the User-Agent header when the caller sets none.
+// To suppress it entirely, set an empty User-Agent via WithUserAgent("").
+const DefaultUserAgent = "httpreq/" + Version
 
 // HTTPError is returned when the response status is outside 2xx. The raw
 // response body is captured in Body so callers can decode their own error
@@ -82,6 +98,8 @@ type request struct {
 	timeout     time.Duration
 	client      *http.Client
 	respInto    any
+	rawRespInto *[]byte
+	errInto     any
 	observers   []func(context.Context, Trace)
 	connTrace   bool
 	curlFn      func(string)
@@ -152,6 +170,27 @@ func WithBearerToken(token string) Option {
 	}
 }
 
+// WithBasicAuth sets `Authorization: Basic <base64(user:password)>`. It
+// overwrites any Authorization set earlier (e.g. via [WithBearerToken]) —
+// last auth option wins.
+func WithBasicAuth(user, password string) Option {
+	return func(r *request) error {
+		enc := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+		r.headers.Set("Authorization", "Basic "+enc)
+		return nil
+	}
+}
+
+// WithUserAgent sets the User-Agent header. Pass an empty string to suppress
+// the User-Agent entirely (no header sent). When this option is not used,
+// [DefaultUserAgent] is sent.
+func WithUserAgent(ua string) Option {
+	return func(r *request) error {
+		r.headers.Set("User-Agent", ua)
+		return nil
+	}
+}
+
 // WithQueryParam appends a URL query parameter. Repeat for multiple
 // values of the same key.
 func WithQueryParam(key, value string) Option {
@@ -191,6 +230,23 @@ func WithRawBody(body []byte) Option {
 	}
 }
 
+// WithFormBody URL-encodes values and sends them as an
+// application/x-www-form-urlencoded body — the shape OAuth token endpoints and
+// classic HTML form posts expect. Pass nil to clear a previously set body.
+func WithFormBody(values url.Values) Option {
+	return func(r *request) error {
+		if values == nil {
+			r.body = nil
+			return nil
+		}
+		encoded := values.Encode()
+		r.body = strings.NewReader(encoded)
+		r.reqBytes = len(encoded)
+		r.headers.Set("Content-Type", "application/x-www-form-urlencoded")
+		return nil
+	}
+}
+
 // WithTimeout caps the total request time including dialing, headers,
 // body, and response reading. Default: 30 seconds. Pass 0 to use the
 // caller's context deadline alone.
@@ -220,6 +276,30 @@ func WithHTTPClient(c *http.Client) Option {
 func WithResponseInto(v any) Option {
 	return func(r *request) error {
 		r.respInto = v
+		return nil
+	}
+}
+
+// WithResponseBytes captures the raw response body into *b, regardless of
+// status and regardless of whether [WithResponseInto] is also set. Use it for
+// non-JSON responses (HTML, text, XML, binary) or when you need the exact
+// bytes alongside a decoded value. On an empty response *b is set to an empty,
+// non-nil slice.
+func WithResponseBytes(b *[]byte) Option {
+	return func(r *request) error {
+		r.rawRespInto = b
+		return nil
+	}
+}
+
+// WithErrorInto JSON-decodes the response body into v when the status is
+// non-2xx (i.e. when an [HTTPError] is returned), letting you read a structured
+// error payload. v must be a pointer. The [HTTPError] is still returned; if the
+// error body is not valid JSON, v is left unchanged and no extra error is
+// raised (inspect HTTPError.Body for the raw bytes).
+func WithErrorInto(v any) Option {
+	return func(r *request) error {
+		r.errInto = v
 		return nil
 	}
 }
@@ -377,11 +457,21 @@ func Do(ctx context.Context, endpoint string, opts ...Option) (*http.Response, e
 		return res, err
 	}
 
+	// Hand out the raw bytes regardless of status or decode target.
+	if r.rawRespInto != nil {
+		*r.rawRespInto = body
+	}
+
 	if res.StatusCode >= 300 {
 		herr := &HTTPError{
 			StatusCode: res.StatusCode,
 			Status:     res.Status,
 			Body:       body,
+		}
+		// Best-effort decode of a structured error payload. A non-JSON body
+		// leaves errInto untouched; the HTTPError is authoritative regardless.
+		if r.errInto != nil && len(body) > 0 {
+			_ = json.Unmarshal(body, r.errInto)
 		}
 		tr.Err = herr
 		return res, herr
@@ -467,6 +557,13 @@ func (r *request) newRequest(ctx context.Context, endpoint string) (*http.Reques
 		return nil, "", fmt.Errorf("httpreq: new request: %w", err)
 	}
 	req.Header = r.headers
+	// Apply the default User-Agent only when the caller set none. A caller that
+	// wants no User-Agent uses WithUserAgent("") — the key is then present with
+	// an empty value and we leave it alone. Done here (not at send) so a curl
+	// dump reflects exactly what goes on the wire.
+	if _, ok := req.Header["User-Agent"]; !ok {
+		req.Header.Set("User-Agent", DefaultUserAgent)
+	}
 	return req, finalURL, nil
 }
 
@@ -549,7 +646,7 @@ func requestBodyBytes(req *http.Request) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer rc.Close()
+		defer func() { _ = rc.Close() }()
 		return io.ReadAll(rc)
 	}
 	data, err := io.ReadAll(req.Body)

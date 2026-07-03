@@ -37,7 +37,7 @@ func TestCurl_PostJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Curl: %v", err)
 	}
-	want := `curl -X POST -H 'Authorization: Bearer tok' -H 'Content-Type: application/json' --data-raw '{"a":1}' 'https://api.example.com/users'`
+	want := `curl -X POST -H 'Authorization: Bearer tok' -H 'Content-Type: application/json' -H 'User-Agent: httpreq/` + Version + `' --data-raw '{"a":1}' 'https://api.example.com/users'`
 	if got != want {
 		t.Errorf("curl mismatch\n got: %s\nwant: %s", got, want)
 	}

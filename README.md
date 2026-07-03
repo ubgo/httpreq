@@ -25,11 +25,12 @@ _, err := httpreq.Do(ctx, "https://api.example.com/users",
 ## What it does
 
 - Builds the request from options.
-- Adds `Authorization`, `Content-Type`, custom headers, and query params.
+- Adds bearer or basic auth, `Content-Type`, a default User-Agent, custom headers, and query params.
+- Encodes the body as JSON, URL-encoded form, or raw bytes.
 - Sends with a per-request timeout and your context.
 - Reads the body once.
-- Returns `*HTTPError` for non-2xx (with the raw body captured).
-- JSON-decodes the body into the target you supplied.
+- Returns `*HTTPError` for non-2xx (with the raw body captured), and can decode a structured error shape.
+- Routes the response into a JSON target, a raw `[]byte`, or both.
 
 ## What it doesn't do
 
@@ -54,19 +55,83 @@ The standard library is the right foundation, but the most common service call �
 
 Reach for a full client when you need retries, rate limiting, or protocol helpers out of the box. Reach for httpreq when you want the stdlib with the boilerplate removed and nothing else added.
 
+## Recipes
+
+Common day-to-day patterns.
+
+**OAuth2 token request** — HTTP Basic client auth plus a form-encoded body:
+
+```go
+form := url.Values{}
+form.Set("grant_type", "client_credentials")
+form.Set("scope", "read write")
+
+var tok struct {
+    AccessToken string `json:"access_token"`
+    ExpiresIn   int    `json:"expires_in"`
+}
+_, err := httpreq.Do(ctx, "https://auth.example.com/oauth/token",
+    httpreq.WithMethod(http.MethodPost),
+    httpreq.WithBasicAuth(clientID, clientSecret),
+    httpreq.WithFormBody(form),
+    httpreq.WithResponseInto(&tok),
+)
+```
+
+**Fetch a non-JSON body** — HTML, text, XML, or binary, captured verbatim:
+
+```go
+var raw []byte
+_, err := httpreq.Do(ctx, "https://example.com/page.html",
+    httpreq.WithResponseBytes(&raw),
+)
+// raw holds the exact response bytes, whatever the content type.
+```
+
+**Handle a structured error body** — decode the API's error shape on non-2xx while still getting the typed `HTTPError`:
+
+```go
+var apiErr struct {
+    Code    string `json:"code"`
+    Message string `json:"message"`
+}
+_, err := httpreq.Do(ctx, "https://api.example.com/users",
+    httpreq.WithMethod(http.MethodPost),
+    httpreq.WithJSONBody(newUser),
+    httpreq.WithResponseInto(&created),
+    httpreq.WithErrorInto(&apiErr),   // populated only on 4xx/5xx
+)
+var herr *httpreq.HTTPError
+if errors.As(err, &herr) {
+    log.Printf("api rejected: %d %s — %s", herr.StatusCode, apiErr.Code, apiErr.Message)
+}
+```
+
+**Identify your client** — set a User-Agent (some hosts reject an empty one):
+
+```go
+_, err := httpreq.Do(ctx, url, httpreq.WithUserAgent("my-service/1.4.2"))
+// Unset, httpreq sends "httpreq/<version>"; pass "" to send none.
+```
+
 ## Options
 
 | Option | Effect |
 |--------|--------|
 | `WithMethod(string)` | HTTP method. Default: GET. |
 | `WithHeader(k, v)` | Add a header. Repeat for multi-value. |
+| `WithUserAgent(string)` | Set User-Agent. Default: `httpreq/<version>`. Pass `""` to suppress. |
 | `WithBearerToken(string)` | `Authorization: Bearer <t>`. No-op when empty. |
+| `WithBasicAuth(user, pass)` | `Authorization: Basic <base64>`. Overrides any earlier auth. |
 | `WithQueryParam(k, v)` | Append a query string parameter. Repeat for multi-value. |
 | `WithJSONBody(any)` | Marshal body as JSON, set `Content-Type`. `nil` clears. |
+| `WithFormBody(url.Values)` | URL-encoded `application/x-www-form-urlencoded` body. `nil` clears. |
 | `WithRawBody([]byte)` | Send bytes verbatim. Caller sets `Content-Type`. |
 | `WithTimeout(time.Duration)` | Default: 30s. Set to 0 to use ctx deadline only. |
 | `WithHTTPClient(*http.Client)` | Override the underlying client. |
 | `WithResponseInto(any)` | JSON-decode response into v (must be a pointer). |
+| `WithResponseBytes(*[]byte)` | Capture the raw response body (any status, any content type). |
+| `WithErrorInto(any)` | JSON-decode a structured error body on non-2xx into v. |
 | `WithObserver(func(ctx, Trace))` | Callback fired once per attempt with metadata (see Observability). Repeatable. |
 | `WithConnTrace()` | Fill DNS/Connect/TLS/TTFB timings on the `Trace` via `httptrace`. |
 | `WithCurl(func(curl string))` | Callback fired with the request as a runnable `curl` command, just before send. |
@@ -205,7 +270,10 @@ No. The `Trace` passed to observers carries metadata only — never request/resp
 Use `WithCurl(func(cmd string){ ... })` while calling `Do` to log exactly what's sent, or `Curl(ctx, url, opts...)` to get the string without sending. If you already hold a plain `*http.Request` from elsewhere, `RequestCurl(req)` renders it. See [Dump as curl](#dump-as-curl). The output is a full, faithful dump — including `Authorization` — so redact before logging to a shared sink.
 
 **Can I send non-JSON bodies?**
-Yes. Use `WithRawBody([]byte)` for form posts, protobuf, or any pre-encoded payload, and set `Content-Type` with `WithHeader`.
+Yes. Use `WithFormBody(url.Values)` for `application/x-www-form-urlencoded` posts, or `WithRawBody([]byte)` for protobuf or any pre-encoded payload (set `Content-Type` with `WithHeader` for raw).
+
+**How do I read a non-JSON response?**
+Use `WithResponseBytes(&raw)` to capture the exact response bytes regardless of content type — HTML, text, XML, binary. It works alongside `WithResponseInto` and is populated on error responses too. See [Recipes](#recipes).
 
 **Is the API stable?**
 The module is pre-1.0. The surface is small and unlikely to change much, but breaking changes are possible before v1.0.0; after that they require a major version bump.

@@ -14,8 +14,10 @@ httpreq collapses the most common service call — marshal a request body, set h
 ## Core API
 
 - `Do(ctx, endpoint, opts ...Option) (*http.Response, error)`: build and send a request; body is read, drained, and (optionally) JSON-decoded.
-- `WithMethod`, `WithHeader`, `WithBearerToken`, `WithQueryParam`: request shaping.
-- `WithJSONBody`, `WithRawBody`, `WithResponseInto`: bodies and response decoding.
+- `WithMethod`, `WithHeader`, `WithUserAgent`, `WithQueryParam`: request shaping. A default User-Agent (`httpreq/<version>`) is sent when the caller sets none.
+- `WithBearerToken`, `WithBasicAuth`: authentication (last auth option wins).
+- `WithJSONBody`, `WithFormBody`, `WithRawBody`: JSON, URL-encoded form, or verbatim bodies.
+- `WithResponseInto`, `WithResponseBytes`, `WithErrorInto`: decode JSON into a target, capture the raw body (any content type), or decode a structured error body on non-2xx.
 - `WithTimeout`, `WithHTTPClient`: transport control and connection pooling.
 - `WithObserver(func(ctx, Trace))`: fires once per attempt with metadata only (no bodies, no headers).
 - `WithConnTrace()`: adds DNS/Connect/TLS/TTFB phase timing to the `Trace`.
