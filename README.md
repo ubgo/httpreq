@@ -153,10 +153,12 @@ _, err := httpreq.Do(ctx, url,
 |--------|--------|
 | `WithMethod(string)` | HTTP method. Default: GET. |
 | `WithHeader(k, v)` | Add a header. Repeat for multi-value. |
+| `WithHeaders(http.Header)` | Add a whole header set at once. |
 | `WithUserAgent(string)` | Set User-Agent. Default: `httpreq/<version>`. Pass `""` to suppress. |
 | `WithBearerToken(string)` | `Authorization: Bearer <t>`. No-op when empty. |
 | `WithBasicAuth(user, pass)` | `Authorization: Basic <base64>`. Overrides any earlier auth. |
 | `WithQueryParam(k, v)` | Append a query string parameter. Repeat for multi-value. |
+| `WithQuery(url.Values)` | Append a whole set of query parameters at once. |
 | `WithJSONBody(any)` | Marshal body as JSON, set `Content-Type`. `nil` clears. |
 | `WithFormBody(url.Values)` | URL-encoded `application/x-www-form-urlencoded` body. `nil` clears. |
 | `WithRawBody([]byte)` | Send bytes verbatim. Caller sets `Content-Type`. |

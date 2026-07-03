@@ -14,7 +14,7 @@ httpreq collapses the most common service call — marshal a request body, set h
 ## Core API
 
 - `Do(ctx, endpoint, opts ...Option) (*http.Response, error)`: build and send a request; body is read, drained, and (optionally) JSON-decoded.
-- `WithMethod`, `WithHeader`, `WithUserAgent`, `WithQueryParam`: request shaping. A default User-Agent (`httpreq/<version>`) is sent when the caller sets none.
+- `WithMethod`, `WithHeader`, `WithHeaders`, `WithUserAgent`, `WithQueryParam`, `WithQuery`: request shaping (single or bulk header/query setters). A default User-Agent (`httpreq/<version>`) is sent when the caller sets none.
 - `WithBearerToken`, `WithBasicAuth`: authentication (last auth option wins).
 - `WithJSONBody`, `WithFormBody`, `WithRawBody`: JSON, URL-encoded form, or verbatim bodies.
 - `WithResponseInto`, `WithResponseBytes`, `WithResponseWriter`, `WithErrorInto`: decode JSON into a target, capture the raw body, stream a large body to an io.Writer, or decode a structured error body on non-2xx.

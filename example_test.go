@@ -121,6 +121,28 @@ func ExampleWithErrorInto() {
 	// Output: 400 invalid_field: name is required
 }
 
+// ExampleWithHeaders and ExampleWithQuery add several headers or query params
+// at once, appending to anything already set.
+func ExampleWithHeaders() {
+	_, _ = httpreq.Do(context.Background(), "https://api.example.com/x",
+		httpreq.WithHeaders(http.Header{
+			"Accept":          {"application/json"},
+			"X-Request-Id":    {"abc-123"},
+			"Accept-Language": {"en-US"},
+		}),
+	)
+}
+
+func ExampleWithQuery() {
+	_, _ = httpreq.Do(context.Background(), "https://api.example.com/search",
+		httpreq.WithQuery(url.Values{
+			"q":    {"golang"},
+			"page": {"2"},
+			"tag":  {"http", "client"},
+		}),
+	)
+}
+
 // ExampleWithResponseWriter streams the response body to a writer instead of
 // buffering it in memory — the way to download large files. Compose sinks with
 // io.MultiWriter to, e.g., write to a file and hash in one pass.

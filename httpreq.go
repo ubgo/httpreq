@@ -164,6 +164,20 @@ func WithHeader(key, value string) Option {
 	}
 }
 
+// WithHeaders adds every key/value in h to the request, appending to any
+// headers already set (same semantics as calling [WithHeader] once per value).
+// A nil or empty h is a no-op.
+func WithHeaders(h http.Header) Option {
+	return func(r *request) error {
+		for key, values := range h {
+			for _, v := range values {
+				r.headers.Add(key, v)
+			}
+		}
+		return nil
+	}
+}
+
 // WithBearerToken sets `Authorization: Bearer <token>`. No-op if the
 // token is empty.
 func WithBearerToken(token string) Option {
@@ -202,6 +216,20 @@ func WithUserAgent(ua string) Option {
 func WithQueryParam(key, value string) Option {
 	return func(r *request) error {
 		r.queryParams.Add(key, value)
+		return nil
+	}
+}
+
+// WithQuery adds every key/value in q to the URL query string, appending to
+// any parameters already set (same semantics as calling [WithQueryParam] once
+// per value). A nil or empty q is a no-op.
+func WithQuery(q url.Values) Option {
+	return func(r *request) error {
+		for key, values := range q {
+			for _, v := range values {
+				r.queryParams.Add(key, v)
+			}
+		}
 		return nil
 	}
 }

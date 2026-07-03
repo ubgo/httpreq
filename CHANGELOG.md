@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `WithResponseWriter(io.Writer)` streams a successful response body to a writer via `io.Copy` instead of buffering — for downloads larger than memory. Error responses are still buffered into the `HTTPError`.
 - `WithExpectStatus(...int)` accepts additional status codes (e.g. 304 Not Modified) as success instead of returning an `HTTPError`.
 - `WithRequest(func(*http.Request) error)` hook mutates the fully built request just before send — for request signing, or fields net/http keeps off the header map (Host, cookies, Close, Trailer). Runs for `Curl` too; a returned error aborts before sending.
+- `WithHeaders(http.Header)` and `WithQuery(url.Values)` bulk setters, adding a whole set of headers or query params at once (append semantics).
 - `SlogObserver(*slog.Logger, slog.Level)` adapter for structured logging (stdlib `log/slog`); failures log at `ERROR`.
 - Runnable `Example` functions (pkg.go.dev snippets, compiled and verified by `go test`) for `Do`, `HTTPError`, `WithObserver`, `SlogObserver`, and `WithConnTrace`.
 
